@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-CLI entry point for speech separation using DPRNN-TasNet.
+CLI entry point for speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
 This script provides a command-line interface for separating
-overlapping speech from audio recordings using the Asteroid library.
+overlapping speech from audio recordings using the Asteroid library
+or SpeechBrain. SepFormer is recommended for long audio files
+as it supports efficient chunked processing.
 """
 
 import argparse
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Speech separation using DPRNN-TasNet or Conv-TasNet',
+        description='Speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
@@ -57,9 +59,9 @@ def parse_args():
     parser.add_argument(
         '--model',
         type=str,
-        choices=['dprnn-tasnet', 'conv-tasnet'],
-        default='dprnn-tasnet',
-        help='Model to use for separation'
+        choices=['dprnn-tasnet', 'conv-tasnet', 'sepformer'],
+        default='sepformer',
+        help='Model to use: sepformer (best for long audio), dprnn-tasnet, conv-tasnet'
     )
 
     parser.add_argument(
@@ -68,6 +70,26 @@ def parse_args():
         choices=['cpu', 'cuda', 'auto'],
         default='auto',
         help='Device for inference'
+    )
+
+    parser.add_argument(
+        '--chunk-duration',
+        type=float,
+        default=30.0,
+        help='Duration of each chunk in seconds for long audio processing'
+    )
+
+    parser.add_argument(
+        '--overlap',
+        type=float,
+        default=5.0,
+        help='Overlap duration between chunks in seconds'
+    )
+
+    parser.add_argument(
+        '--no-chunking',
+        action='store_true',
+        help='Disable automatic chunking for long files'
     )
 
     return parser.parse_args()
@@ -89,6 +111,11 @@ def main():
 
     print(f"Input audio: {args.audio}")
     print(f"Output directory: {args.output_dir}")
+    if not args.no_chunking:
+        print(f"Chunk duration: {args.chunk_duration}s")
+        print(f"Overlap duration: {args.overlap}s")
+    else:
+        print("Chunking: Disabled")
 
     # Try to extract speaker count from diarization
     num_speakers = None
@@ -130,7 +157,10 @@ def main():
         saved_paths = separator.process_and_save(
             audio_path=args.audio,
             output_dir=args.output_dir,
-            num_speakers=num_speakers
+            num_speakers=num_speakers,
+            use_chunking=not args.no_chunking,
+            chunk_duration=args.chunk_duration,
+            overlap_duration=args.overlap
         )
     except Exception as e:
         logger.error(f"Separation failed: {e}")
