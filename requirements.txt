@@ -15,3 +15,7 @@ soundfile>=0.12.1
 
 # Utilities
 scipy>=1.11.0
+
+# Speech separation
+asteroid>=0.7.0
+pytorch-lightning>=2.0.0
