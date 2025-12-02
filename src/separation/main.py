@@ -3,9 +3,9 @@
 CLI entry point for speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
 This script provides a command-line interface for separating
-overlapping speech from audio recordings using the Asteroid library
-or SpeechBrain. SepFormer is recommended for long audio files
-as it supports efficient chunked processing.
+overlapping speech from audio recordings using the Asteroid library.
+SepFormer is recommended for long audio files as it supports efficient
+chunked processing.
 """
 
 import argparse

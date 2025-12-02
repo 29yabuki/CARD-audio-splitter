@@ -28,7 +28,7 @@ class SpeechSeparator:
     """
     Speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
-    This class loads pretrained models from the Asteroid library or SpeechBrain
+    This class loads pretrained models from the Asteroid library
     and provides methods to separate overlapping speech sources from
     mixed audio recordings. For long audio files, chunked processing
     is supported to avoid memory issues.
@@ -39,11 +39,11 @@ class SpeechSeparator:
         model: The loaded separation model.
     """
 
-    # Pretrained model identifiers
+    # Pretrained model identifiers (all using Asteroid library)
     MODEL_CONFIGS = {
         'dprnn-tasnet': 'mpariente/DPRNNTasNet-ks2_WHAM_sepclean',
         'conv-tasnet': 'mpariente/ConvTasNet_WHAM!_sepclean',
-        'sepformer': 'speechbrain/sepformer-wham16k'
+        'sepformer': 'mpariente/SepFormer_Libri2Mix_sepclean_16k'
     }
 
     def __init__(
@@ -98,11 +98,11 @@ class SpeechSeparator:
 
     def load_model(self) -> None:
         """
-        Load the pretrained separation model with fallback options.
+        Load the pretrained Asteroid model with fallback.
 
         This method downloads and caches the pretrained model if not
-        already available locally. Supports DPRNN-TasNet, Conv-TasNet
-        from Asteroid, and SepFormer from SpeechBrain.
+        already available locally. All models (DPRNN-TasNet, Conv-TasNet,
+        and SepFormer) are loaded from the Asteroid library.
 
         Raises:
             RuntimeError: If the model fails to load.
@@ -133,14 +133,19 @@ class SpeechSeparator:
                     logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
                     self.model = ConvTasNet(n_src=2)
             elif self.model_name == 'sepformer':
-                from speechbrain.inference.separation import SepformerSeparation
-                self.model = SepformerSeparation.from_hparams(
-                    source=self.MODEL_CONFIGS[self.model_name],
-                    savedir='models/sepformer',
-                    run_opts={"device": self.device}
-                )
-                logger.info("Model loaded successfully")
-                return  # SepFormer handles device placement internally
+                from asteroid.models import SepFormer
+                try:
+                    self.model = SepFormer.from_pretrained(
+                        self.MODEL_CONFIGS[self.model_name]
+                    )
+                except (OSError, IOError) as e:
+                    logger.warning(f"Failed to load SepFormer: {e}")
+                    logger.info("Falling back to DPRNNTasNet...")
+                    from asteroid.models import DPRNNTasNet
+                    self.model = DPRNNTasNet.from_pretrained(
+                        self.MODEL_CONFIGS['dprnn-tasnet']
+                    )
+                    self.model_name = 'dprnn-tasnet'
 
             self.model = self.model.to(self.device)
             self.model.eval()
@@ -217,11 +222,7 @@ class SpeechSeparator:
 
         # Run separation
         with torch.no_grad():
-            if self.model_name == 'sepformer':
-                separated = self.model.separate_batch(waveform)
-                separated = separated.squeeze(0)
-            else:
-                separated = self.model(waveform)
+            separated = self.model(waveform)
 
         # Convert to numpy
         if isinstance(separated, torch.Tensor):
@@ -354,11 +355,7 @@ class SpeechSeparator:
 
         # Run separation
         with torch.no_grad():
-            if self.model_name == 'sepformer':
-                separated = self.model.separate_batch(chunk)
-                separated = separated.squeeze(0)
-            else:
-                separated = self.model(chunk)
+            separated = self.model(chunk)
 
         # Convert to numpy
         if isinstance(separated, torch.Tensor):
