@@ -201,6 +201,9 @@ class SpeechSeparator:
                 savedir=savedir
             )
             # Set self.model to indicate model is loaded (used for None checks)
+            # Note: We access .mods which is SpeechBrain's internal module container.
+            # This is used only as a flag to indicate the model is loaded.
+            # The actual inference uses self._sepformer_inference.separate_batch()
             self.model = self._sepformer_inference.mods
             logger.info(f"SepFormer loaded from: {model_path}")
         except Exception as e:
@@ -214,7 +217,9 @@ class SpeechSeparator:
         Apply torchaudio compatibility fix for newer versions.
 
         Newer torchaudio versions (>=2.1) removed `list_audio_backends` which
-        SpeechBrain may require. This adds a compatibility shim if needed.
+        SpeechBrain may require. This adds a compatibility shim that returns
+        common backends. The actual audio loading is handled by the libraries
+        internally and doesn't strictly depend on this list.
         """
         import torchaudio
         try:
@@ -222,6 +227,7 @@ class SpeechSeparator:
             _ = torchaudio.list_audio_backends
         except AttributeError:
             # Add compatibility shim for newer torchaudio versions
+            # Return common backends that are typically available
             torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
             logger.debug("Applied torchaudio compatibility fix for list_audio_backends")
 
@@ -457,9 +463,11 @@ class SpeechSeparator:
                         "SepFormer inference wrapper not initialized. "
                         "Ensure load_model() completed successfully."
                     )
-                # SpeechBrain SepFormer uses a different API
+                # SpeechBrain SepFormer uses separate_batch() for tensor input
+                # Input: (batch, samples) tensor
+                # Output: (batch, samples, num_sources) tensor
                 separated = self._sepformer_inference.separate_batch(waveform)
-                # SpeechBrain returns (batch, samples, num_sources), transpose to (batch, num_sources, samples)
+                # Transpose to match Asteroid's output format: (batch, num_sources, samples)
                 if separated.dim() == 3:
                     separated = separated.permute(0, 2, 1)
             else:
