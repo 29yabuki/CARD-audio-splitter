@@ -25,7 +25,7 @@ class SpeakerDiarization:
     
     def __init__(
         self,
-        whisper_model: str = "medium",
+        whisper_model: str = "large",
         similarity_threshold: float = 0.65,
         ema_alpha: float = 0.3,
         device: Optional[str] = None,

@@ -15,12 +15,12 @@ from src.diarization.diarization import SpeakerDiarization
 def main():
     # Project paths
     project_root = Path(__file__).parent.parent.parent
-    audio_file = project_root / "data" / "custom" / "the_great_chicken_debate.wav"
+    audio_file = project_root / "data" / "custom" / "PrimeagenLex.wav"
     output_dir = project_root / "outputs"
     
     print("="*80)
     print("Unsupervised Speaker Diarization Pipeline")
-    print("Using Whisper Medium Model")
+    print("Using Whisper Large Model")
     print("="*80)
     print(f"Audio file: {audio_file}")
     print(f"Output directory: {output_dir}")
@@ -33,11 +33,11 @@ def main():
     
     # Initialize diarizer with medium Whisper model
     diarizer = SpeakerDiarization(
-        whisper_model="medium",          # Using medium for better accuracy
-        similarity_threshold=0.65,       # Lower = fewer unique speakers
+        whisper_model="large",          # Using large
+        similarity_threshold=0.45,      # Lower = fewer unique speakers
         ema_alpha=0.3,                  # Lower = more stable profiles
         min_speakers=2,                 # Expected minimum speakers
-        max_speakers=5                  # Expected maximum speakers
+        max_speakers=2                  # Expected maximum speakers
     )
     
     # Run diarization
