@@ -6,7 +6,6 @@ torchaudio==2.1.2
 
 # ML models
 openai-whisper>=20231117
-speechbrain>=0.5.16
 transformers==4.35.2
 
 # Audio processing
