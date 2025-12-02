@@ -126,8 +126,16 @@ class SpeechSeparator:
             elif self.model_name == 'sepformer':
                 self._load_sepformer(model_path)
 
-            self.model = self.model.to(self.device)
-            self.model.eval()
+            # Handle device transfer based on model type
+            if self.model_name == 'sepformer':
+                # SpeechBrain handles device transfer internally
+                # Move the inference wrapper to the device
+                if self._sepformer_inference is not None:
+                    self._sepformer_inference = self._sepformer_inference.to(self.device)
+            else:
+                # Asteroid models use standard PyTorch device transfer
+                self.model = self.model.to(self.device)
+                self.model.eval()
 
             logger.info(f"Model '{self.model_name}' loaded successfully")
 
@@ -169,9 +177,7 @@ class SpeechSeparator:
         """
         # Apply torchaudio compatibility fix for newer versions
         # Newer torchaudio versions (>=2.1) removed list_audio_backends
-        import torchaudio
-        if not hasattr(torchaudio, 'list_audio_backends'):
-            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
+        self._apply_torchaudio_compat()
 
         try:
             from speechbrain.inference.separation import SepformerSeparation
@@ -194,7 +200,7 @@ class SpeechSeparator:
                 source=model_path,
                 savedir=savedir
             )
-            # Get the underlying model for device transfer
+            # Set self.model to indicate model is loaded (used for None checks)
             self.model = self._sepformer_inference.mods
             logger.info(f"SepFormer loaded from: {model_path}")
         except Exception as e:
@@ -202,6 +208,22 @@ class SpeechSeparator:
                 f"Failed to load SepFormer model from '{model_path}': {e}. "
                 f"Ensure the model exists and is publicly accessible on HuggingFace."
             )
+
+    def _apply_torchaudio_compat(self) -> None:
+        """
+        Apply torchaudio compatibility fix for newer versions.
+
+        Newer torchaudio versions (>=2.1) removed `list_audio_backends` which
+        SpeechBrain may require. This adds a compatibility shim if needed.
+        """
+        import torchaudio
+        try:
+            # Check if the function exists
+            _ = torchaudio.list_audio_backends
+        except AttributeError:
+            # Add compatibility shim for newer torchaudio versions
+            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
+            logger.debug("Applied torchaudio compatibility fix for list_audio_backends")
 
     def separate(
         self,
@@ -423,9 +445,18 @@ class SpeechSeparator:
 
         Returns:
             Separated sources tensor.
+
+        Raises:
+            RuntimeError: If SepFormer inference wrapper is not initialized.
         """
         with torch.no_grad():
             if self.model_name == 'sepformer':
+                # Validate SpeechBrain inference wrapper is available
+                if self._sepformer_inference is None:
+                    raise RuntimeError(
+                        "SepFormer inference wrapper not initialized. "
+                        "Ensure load_model() completed successfully."
+                    )
                 # SpeechBrain SepFormer uses a different API
                 separated = self._sepformer_inference.separate_batch(waveform)
                 # SpeechBrain returns (batch, samples, num_sources), transpose to (batch, num_sources, samples)
