@@ -426,7 +426,7 @@ class SpeechSeparator:
 def separate_audio(
     audio_path: str,
     output_dir: str,
-    model_name: str = 'dprnn-tasnet',
+    model_name: str = 'sepformer',
     device: str = 'auto',
     num_speakers: Optional[int] = None,
     use_chunking: bool = True,
