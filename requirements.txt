@@ -1,12 +1,12 @@
 # Core dependencies
 numpy<2.0
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
 
 # ML models
 openai-whisper>=20231117
-transformers==4.35.2
+transformers>=4.35.0
 
 # Audio processing
 librosa>=0.10.0
@@ -18,3 +18,4 @@ scipy>=1.11.0
 # Speech separation
 asteroid>=0.7.0
 pytorch-lightning>=2.0.0
+speechbrain>=1.0.0
