@@ -45,9 +45,12 @@ def load_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
             # Convert to tensor and add channel dimension
             if data.ndim == 1:
                 waveform = torch.from_numpy(data).float().unsqueeze(0)
-            else:
-                # Multi-channel: transpose to (channels, samples)
+            elif data.ndim == 2:
+                # soundfile returns (samples, channels), transpose to (channels, samples)
                 waveform = torch.from_numpy(data.T).float()
+            else:
+                # Handle unexpected dimensions by flattening to mono
+                waveform = torch.from_numpy(data.flatten()).float().unsqueeze(0)
         except Exception as e:
             raise RuntimeError(f"Failed to load audio file: {path}. Error: {e}")
 
@@ -169,5 +172,13 @@ def get_audio_duration(path: str) -> float:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Audio file not found: {path}")
 
-    info = torchaudio.info(path)
-    return info.num_frames / info.sample_rate
+    try:
+        info = torchaudio.info(path)
+        return info.num_frames / info.sample_rate
+    except Exception:
+        # Fallback to soundfile
+        try:
+            data, sample_rate = sf.read(path)
+            return len(data) / sample_rate
+        except Exception as e:
+            raise RuntimeError(f"Failed to get audio duration: {path}. Error: {e}")

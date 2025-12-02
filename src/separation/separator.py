@@ -157,11 +157,17 @@ class SpeechSeparator:
         # Ensure waveform is on the correct device
         waveform = waveform.to(self.device)
 
-        # Add batch dimension if needed
-        if waveform.dim() == 2:
-            waveform = waveform.squeeze(0)  # Remove channel dim for mono
+        # Prepare input tensor: model expects (batch, samples)
+        # load_audio returns (channels, samples), which is (1, samples) for mono
+        if waveform.dim() == 2 and waveform.shape[0] == 1:
+            # Shape is (1, samples), squeeze channel dim to get (samples,)
+            waveform = waveform.squeeze(0)
+        elif waveform.dim() == 2:
+            # Shape is (channels, samples) with channels > 1, convert to mono
+            waveform = torch.mean(waveform, dim=0)
+        # Now waveform is (samples,), add batch dim to get (1, samples)
         if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)  # Add batch dim
+            waveform = waveform.unsqueeze(0)
 
         logger.info(f"Input waveform shape: {waveform.shape}")
         logger.info("Running separation...")

@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument(
         '--diarization',
         type=str,
-        default='outputs/PrimeagenLex_diarization.json',
+        default=None,
         help='Path to diarization JSON file (for speaker count hint)'
     )
 
@@ -92,7 +92,7 @@ def main():
 
     # Try to extract speaker count from diarization
     num_speakers = None
-    if os.path.exists(args.diarization):
+    if args.diarization and os.path.exists(args.diarization):
         try:
             num_speakers = extract_speaker_count(args.diarization)
             print(f"Diarization file: {args.diarization}")
@@ -101,7 +101,10 @@ def main():
             logger.warning(f"Could not read diarization file: {e}")
             print("Diarization file: Not available")
     else:
-        print(f"Diarization file: Not found ({args.diarization})")
+        if args.diarization:
+            print(f"Diarization file: Not found ({args.diarization})")
+        else:
+            print("Diarization file: Not provided")
 
     print("=" * 80)
 
