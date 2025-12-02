@@ -138,13 +138,14 @@ class SpeechSeparator:
                     self.model = SepFormer.from_pretrained(
                         self.MODEL_CONFIGS[self.model_name]
                     )
-                except (OSError, IOError, ValueError) as e:
+                except (OSError, IOError) as e:
                     logger.warning(f"Failed to load SepFormer: {e}")
                     logger.info("Falling back to DPRNNTasNet...")
                     from asteroid.models import DPRNNTasNet
                     self.model = DPRNNTasNet.from_pretrained(
                         self.MODEL_CONFIGS['dprnn-tasnet']
                     )
+                    self.model_name = 'dprnn-tasnet'
 
             self.model = self.model.to(self.device)
             self.model.eval()
