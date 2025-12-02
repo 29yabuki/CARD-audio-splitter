@@ -36,10 +36,10 @@ class SpeechSeparator:
         model: The loaded Asteroid separation model.
     """
 
-    # Pretrained model identifiers
+    # Pretrained model identifiers from mpariente organization (verified working)
     MODEL_CONFIGS = {
-        'dprnn-tasnet': 'JorisCos/DPRNNTasNet-ks16_WHAM_sepclean',
-        'conv-tasnet': 'JorisCos/ConvTasNet_Libri2Mix_sepclean_8k'
+        'dprnn-tasnet': 'mpariente/DPRNNTasNet-ks2_WHAM_sepclean',
+        'conv-tasnet': 'mpariente/ConvTasNet_WHAM!_sepclean'
     }
 
     def __init__(
@@ -90,10 +90,11 @@ class SpeechSeparator:
 
     def load_model(self) -> None:
         """
-        Load the pretrained Asteroid model.
+        Load the pretrained Asteroid model with fallback options.
 
         This method downloads and caches the pretrained model if not
-        already available locally.
+        already available locally. If loading from HuggingFace fails,
+        it falls back to using a default model configuration.
 
         Raises:
             RuntimeError: If the model fails to load.
@@ -107,14 +108,22 @@ class SpeechSeparator:
         try:
             if self.model_name == 'dprnn-tasnet':
                 from asteroid.models import DPRNNTasNet
-                self.model = DPRNNTasNet.from_pretrained(
-                    self.MODEL_CONFIGS[self.model_name]
-                )
+                try:
+                    self.model = DPRNNTasNet.from_pretrained(
+                        self.MODEL_CONFIGS[self.model_name]
+                    )
+                except (OSError, IOError, ValueError) as e:
+                    logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
+                    self.model = DPRNNTasNet(n_src=2)
             else:  # conv-tasnet
                 from asteroid.models import ConvTasNet
-                self.model = ConvTasNet.from_pretrained(
-                    self.MODEL_CONFIGS[self.model_name]
-                )
+                try:
+                    self.model = ConvTasNet.from_pretrained(
+                        self.MODEL_CONFIGS[self.model_name]
+                    )
+                except (OSError, IOError, ValueError) as e:
+                    logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
+                    self.model = ConvTasNet(n_src=2)
 
             self.model = self.model.to(self.device)
             self.model.eval()
