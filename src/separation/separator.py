@@ -1,8 +1,9 @@
 """
-Core speech separation logic using DPRNN-TasNet from Asteroid library.
+Core speech separation logic using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
 This module provides the SpeechSeparator class that uses pretrained
-DPRNN-TasNet or Conv-TasNet models to separate overlapping speech.
+DPRNN-TasNet, Conv-TasNet, or SepFormer models to separate overlapping speech.
+SepFormer with chunked processing is recommended for long audio files.
 """
 
 import logging
@@ -10,6 +11,7 @@ import os
 from typing import Optional, Tuple
 
 import numpy as np
+import soundfile as sf
 import torch
 
 from .utils import load_audio, save_separated_audio, ensure_output_directory
@@ -24,22 +26,24 @@ logger = logging.getLogger(__name__)
 
 class SpeechSeparator:
     """
-    Speech separation using DPRNN-TasNet or Conv-TasNet from Asteroid.
+    Speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
-    This class loads pretrained models from the Asteroid library and
-    provides methods to separate overlapping speech sources from
-    mixed audio recordings.
+    This class loads pretrained models from the Asteroid library or SpeechBrain
+    and provides methods to separate overlapping speech sources from
+    mixed audio recordings. For long audio files, chunked processing
+    is supported to avoid memory issues.
 
     Attributes:
-        model_name: Name of the model to use ('dprnn-tasnet' or 'conv-tasnet').
+        model_name: Name of the model to use ('dprnn-tasnet', 'conv-tasnet', or 'sepformer').
         device: Device for inference ('cpu', 'cuda', or 'auto').
-        model: The loaded Asteroid separation model.
+        model: The loaded separation model.
     """
 
-    # Pretrained model identifiers from mpariente organization (verified working)
+    # Pretrained model identifiers
     MODEL_CONFIGS = {
         'dprnn-tasnet': 'mpariente/DPRNNTasNet-ks2_WHAM_sepclean',
-        'conv-tasnet': 'mpariente/ConvTasNet_WHAM!_sepclean'
+        'conv-tasnet': 'mpariente/ConvTasNet_WHAM!_sepclean',
+        'sepformer': 'speechbrain/sepformer-wham16k'
     }
 
     def __init__(
@@ -51,7 +55,7 @@ class SpeechSeparator:
         Initialize the SpeechSeparator.
 
         Args:
-            model_name: Model to use ('dprnn-tasnet' or 'conv-tasnet').
+            model_name: Model to use ('dprnn-tasnet', 'conv-tasnet', or 'sepformer').
             device: Device for inference ('cpu', 'cuda', 'auto').
 
         Raises:
@@ -66,7 +70,11 @@ class SpeechSeparator:
         self.model_name = model_name
         self.device = self._resolve_device(device)
         self.model = None
-        self._sample_rate = 16000 if model_name == 'dprnn-tasnet' else 8000
+        # SepFormer and DPRNN-TasNet use 16kHz, Conv-TasNet uses 8kHz
+        if model_name == 'conv-tasnet':
+            self._sample_rate = 8000
+        else:
+            self._sample_rate = 16000
 
         logger.info(f"Initialized SpeechSeparator with model: {model_name}")
         logger.info(f"Using device: {self.device}")
@@ -90,11 +98,11 @@ class SpeechSeparator:
 
     def load_model(self) -> None:
         """
-        Load the pretrained Asteroid model with fallback options.
+        Load the pretrained separation model with fallback options.
 
         This method downloads and caches the pretrained model if not
-        already available locally. If loading from HuggingFace fails,
-        it falls back to using a default model configuration.
+        already available locally. Supports DPRNN-TasNet, Conv-TasNet
+        from Asteroid, and SepFormer from SpeechBrain.
 
         Raises:
             RuntimeError: If the model fails to load.
@@ -115,7 +123,7 @@ class SpeechSeparator:
                 except (OSError, IOError, ValueError) as e:
                     logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
                     self.model = DPRNNTasNet(n_src=2)
-            else:  # conv-tasnet
+            elif self.model_name == 'conv-tasnet':
                 from asteroid.models import ConvTasNet
                 try:
                     self.model = ConvTasNet.from_pretrained(
@@ -124,6 +132,15 @@ class SpeechSeparator:
                 except (OSError, IOError, ValueError) as e:
                     logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
                     self.model = ConvTasNet(n_src=2)
+            elif self.model_name == 'sepformer':
+                from speechbrain.inference.separation import SepformerSeparation
+                self.model = SepformerSeparation.from_hparams(
+                    source=self.MODEL_CONFIGS[self.model_name],
+                    savedir='models/sepformer',
+                    run_opts={"device": self.device}
+                )
+                logger.info("Model loaded successfully")
+                return  # SepFormer handles device placement internally
 
             self.model = self.model.to(self.device)
             self.model.eval()
@@ -136,7 +153,10 @@ class SpeechSeparator:
     def separate(
         self,
         audio_path: str,
-        num_speakers: Optional[int] = None
+        num_speakers: Optional[int] = None,
+        use_chunking: bool = True,
+        chunk_duration: float = 30.0,
+        overlap_duration: float = 5.0
     ) -> np.ndarray:
         """
         Separate speech sources from mixed audio.
@@ -145,6 +165,9 @@ class SpeechSeparator:
             audio_path: Path to the input mixed audio file.
             num_speakers: Optional hint for number of speakers (not used
                 by the model but logged for reference).
+            use_chunking: Enable chunked processing for long files (default: True).
+            chunk_duration: Duration of each chunk in seconds (default: 30).
+            overlap_duration: Overlap between chunks in seconds (default: 5).
 
         Returns:
             Array of separated sources with shape (num_sources, num_samples).
@@ -160,21 +183,32 @@ class SpeechSeparator:
         if num_speakers is not None:
             logger.info(f"Speaker count hint: {num_speakers}")
 
-        # Load and preprocess audio
-        waveform, sample_rate = load_audio(audio_path, target_sr=self._sample_rate)
+        # Check audio duration
+        info = sf.info(audio_path)
+        duration = info.duration
 
-        # Ensure waveform is on the correct device
+        logger.info(f"Audio duration: {duration:.1f} seconds")
+
+        # Use chunking for files longer than 2 minutes
+        if use_chunking and duration > 120:
+            logger.info("Using chunked processing for long audio")
+            return self.separate_chunked(
+                audio_path=audio_path,
+                chunk_duration=chunk_duration,
+                overlap_duration=overlap_duration,
+                num_speakers=num_speakers
+            )
+
+        logger.info("Using standard processing")
+        # Original non-chunked implementation
+        waveform, sample_rate = load_audio(audio_path, target_sr=self._sample_rate)
         waveform = waveform.to(self.device)
 
         # Prepare input tensor: model expects (batch, samples)
-        # load_audio returns (channels, samples), which is (1, samples) for mono
         if waveform.dim() == 2 and waveform.shape[0] == 1:
-            # Shape is (1, samples), squeeze channel dim to get (samples,)
             waveform = waveform.squeeze(0)
         elif waveform.dim() == 2:
-            # Shape is (channels, samples) with channels > 1, convert to mono
             waveform = torch.mean(waveform, dim=0)
-        # Now waveform is (samples,), add batch dim to get (1, samples)
         if waveform.dim() == 1:
             waveform = waveform.unsqueeze(0)
 
@@ -183,7 +217,11 @@ class SpeechSeparator:
 
         # Run separation
         with torch.no_grad():
-            separated = self.model(waveform)
+            if self.model_name == 'sepformer':
+                separated = self.model.separate_batch(waveform)
+                separated = separated.squeeze(0)
+            else:
+                separated = self.model(waveform)
 
         # Convert to numpy
         if isinstance(separated, torch.Tensor):
@@ -197,11 +235,148 @@ class SpeechSeparator:
 
         return separated
 
+    def separate_chunked(
+        self,
+        audio_path: str,
+        chunk_duration: float = 30.0,
+        overlap_duration: float = 5.0,
+        num_speakers: Optional[int] = None
+    ) -> np.ndarray:
+        """
+        Separate audio using chunked processing for long files.
+
+        This method splits long audio into overlapping chunks, processes
+        each chunk independently, and stitches them back together using
+        cross-fade to avoid boundary artifacts.
+
+        Args:
+            audio_path: Path to input audio file.
+            chunk_duration: Duration of each chunk in seconds (default: 30).
+            overlap_duration: Overlap between chunks in seconds (default: 5).
+            num_speakers: Optional speaker count hint (not used by model).
+
+        Returns:
+            Array of separated sources with shape (num_sources, num_samples).
+        """
+        # Load full audio
+        waveform, sample_rate = load_audio(audio_path, target_sr=self._sample_rate)
+
+        # Calculate chunk parameters
+        chunk_samples = int(chunk_duration * self._sample_rate)
+        overlap_samples = int(overlap_duration * self._sample_rate)
+        hop_samples = chunk_samples - overlap_samples
+
+        total_samples = waveform.shape[-1]
+        num_chunks = int(np.ceil((total_samples - overlap_samples) / hop_samples))
+
+        logger.info(f"Processing {total_samples / self._sample_rate:.1f}s audio in {num_chunks} chunks")
+
+        # Process chunks
+        separated_sources = None
+
+        for i in range(num_chunks):
+            start_idx = i * hop_samples
+            end_idx = min(start_idx + chunk_samples, total_samples)
+
+            # Extract chunk
+            chunk = waveform[..., start_idx:end_idx]
+
+            # Separate chunk
+            chunk_separated = self._separate_chunk(chunk)
+
+            # Initialize output buffers on first chunk
+            if separated_sources is None:
+                num_sources = chunk_separated.shape[0]
+                separated_sources = [np.zeros(total_samples) for _ in range(num_sources)]
+
+            # Apply cross-fade and add to output
+            chunk_start_in_output = start_idx
+            chunk_end_in_output = end_idx
+            actual_chunk_length = chunk_separated.shape[1]
+
+            for src_idx in range(num_sources):
+                if i == 0:
+                    # First chunk: no fade-in
+                    separated_sources[src_idx][chunk_start_in_output:chunk_end_in_output] = \
+                        chunk_separated[src_idx][:actual_chunk_length]
+                else:
+                    # Apply cross-fade in overlap region
+                    overlap_start = chunk_start_in_output
+                    overlap_end = min(overlap_start + overlap_samples, chunk_end_in_output)
+                    actual_overlap = overlap_end - overlap_start
+
+                    if actual_overlap > 0 and actual_overlap <= actual_chunk_length:
+                        fade_out = np.linspace(1, 0, actual_overlap)
+                        fade_in = np.linspace(0, 1, actual_overlap)
+
+                        # Blend overlap
+                        separated_sources[src_idx][overlap_start:overlap_end] = (
+                            separated_sources[src_idx][overlap_start:overlap_end] * fade_out +
+                            chunk_separated[src_idx][:actual_overlap] * fade_in
+                        )
+
+                        # Add non-overlap part
+                        if overlap_end < chunk_end_in_output:
+                            remaining_length = min(
+                                actual_chunk_length - actual_overlap,
+                                chunk_end_in_output - overlap_end
+                            )
+                            separated_sources[src_idx][overlap_end:overlap_end + remaining_length] = \
+                                chunk_separated[src_idx][actual_overlap:actual_overlap + remaining_length]
+                    else:
+                        # No overlap, just copy
+                        separated_sources[src_idx][chunk_start_in_output:chunk_end_in_output] = \
+                            chunk_separated[src_idx][:actual_chunk_length]
+
+            logger.info(f"Processed chunk {i+1}/{num_chunks}")
+
+        return np.array(separated_sources)
+
+    def _separate_chunk(self, chunk: torch.Tensor) -> np.ndarray:
+        """
+        Separate a single audio chunk.
+
+        Args:
+            chunk: Audio chunk tensor.
+
+        Returns:
+            Separated sources as numpy array with shape (num_sources, num_samples).
+        """
+        chunk = chunk.to(self.device)
+
+        # Prepare input tensor
+        if chunk.dim() == 2 and chunk.shape[0] == 1:
+            chunk = chunk.squeeze(0)
+        elif chunk.dim() == 2:
+            chunk = torch.mean(chunk, dim=0)
+        if chunk.dim() == 1:
+            chunk = chunk.unsqueeze(0)
+
+        # Run separation
+        with torch.no_grad():
+            if self.model_name == 'sepformer':
+                separated = self.model.separate_batch(chunk)
+                separated = separated.squeeze(0)
+            else:
+                separated = self.model(chunk)
+
+        # Convert to numpy
+        if isinstance(separated, torch.Tensor):
+            separated = separated.cpu().numpy()
+
+        if separated.ndim == 3:
+            separated = separated.squeeze(0)
+
+        return separated
+
     def process_and_save(
         self,
         audio_path: str,
         output_dir: str,
-        num_speakers: Optional[int] = None
+        num_speakers: Optional[int] = None,
+        use_chunking: bool = True,
+        chunk_duration: float = 30.0,
+        overlap_duration: float = 5.0
     ) -> list:
         """
         Separate audio and save results to output directory.
@@ -210,6 +385,9 @@ class SpeechSeparator:
             audio_path: Path to the input mixed audio file.
             output_dir: Directory to save separated audio files.
             num_speakers: Optional hint for number of speakers.
+            use_chunking: Enable chunked processing for long files (default: True).
+            chunk_duration: Duration of each chunk in seconds (default: 30).
+            overlap_duration: Overlap between chunks in seconds (default: 5).
 
         Returns:
             List of paths to saved separated audio files.
@@ -222,7 +400,13 @@ class SpeechSeparator:
         ensure_output_directory(separation_output_dir)
 
         # Run separation
-        sources = self.separate(audio_path, num_speakers=num_speakers)
+        sources = self.separate(
+            audio_path,
+            num_speakers=num_speakers,
+            use_chunking=use_chunking,
+            chunk_duration=chunk_duration,
+            overlap_duration=overlap_duration
+        )
 
         # Save separated audio
         saved_paths = save_separated_audio(
@@ -244,7 +428,10 @@ def separate_audio(
     output_dir: str,
     model_name: str = 'dprnn-tasnet',
     device: str = 'auto',
-    num_speakers: Optional[int] = None
+    num_speakers: Optional[int] = None,
+    use_chunking: bool = True,
+    chunk_duration: float = 30.0,
+    overlap_duration: float = 5.0
 ) -> list:
     """
     Convenience function to separate audio.
@@ -252,9 +439,12 @@ def separate_audio(
     Args:
         audio_path: Path to the input mixed audio file.
         output_dir: Directory to save separated audio files.
-        model_name: Model to use ('dprnn-tasnet' or 'conv-tasnet').
+        model_name: Model to use ('dprnn-tasnet', 'conv-tasnet', or 'sepformer').
         device: Device for inference ('cpu', 'cuda', 'auto').
         num_speakers: Optional hint for number of speakers.
+        use_chunking: Enable chunked processing for long files (default: True).
+        chunk_duration: Duration of each chunk in seconds (default: 30).
+        overlap_duration: Overlap between chunks in seconds (default: 5).
 
     Returns:
         List of paths to saved separated audio files.
@@ -264,5 +454,8 @@ def separate_audio(
     return separator.process_and_save(
         audio_path=audio_path,
         output_dir=output_dir,
-        num_speakers=num_speakers
+        num_speakers=num_speakers,
+        use_chunking=use_chunking,
+        chunk_duration=chunk_duration,
+        overlap_duration=overlap_duration
     )
