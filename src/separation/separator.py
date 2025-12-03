@@ -2,13 +2,14 @@
 Core speech separation logic using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
 This module provides the SpeechSeparator class that uses pretrained
-DPRNN-TasNet, Conv-TasNet, or SepFormer models to separate overlapping speech.
+DPRNN-TasNet and Conv-TasNet models from Asteroid, and SepFormer from
+SpeechBrain to separate overlapping speech.
 SepFormer with chunked processing is recommended for long audio files.
 """
 
 import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 import numpy as np
 import soundfile as sf
@@ -28,9 +29,9 @@ class SpeechSeparator:
     """
     Speech separation using DPRNN-TasNet, Conv-TasNet, or SepFormer.
 
-    This class loads pretrained models from the Asteroid library
-    and provides methods to separate overlapping speech sources from
-    mixed audio recordings. For long audio files, chunked processing
+    This class loads pretrained models from Asteroid (DPRNN-TasNet, Conv-TasNet)
+    and SpeechBrain (SepFormer) libraries to separate overlapping speech sources
+    from mixed audio recordings. For long audio files, chunked processing
     is supported to avoid memory issues.
 
     Attributes:
@@ -39,11 +40,13 @@ class SpeechSeparator:
         model: The loaded separation model.
     """
 
-    # Pretrained model identifiers (all using Asteroid library)
+    # Pretrained model identifiers
+    # DPRNN-TasNet and Conv-TasNet use Asteroid library
+    # SepFormer uses SpeechBrain library (speechbrain/sepformer-wsj02mix)
     MODEL_CONFIGS = {
         'dprnn-tasnet': 'mpariente/DPRNNTasNet-ks2_WHAM_sepclean',
         'conv-tasnet': 'mpariente/ConvTasNet_WHAM!_sepclean',
-        'sepformer': 'mpariente/SepFormer_Libri2Mix_sepclean_16k'
+        'sepformer': 'speechbrain/sepformer-wsj02mix'
     }
 
     def __init__(
@@ -70,6 +73,7 @@ class SpeechSeparator:
         self.model_name = model_name
         self.device = self._resolve_device(device)
         self.model = None
+        self._sepformer_inference = None  # SpeechBrain inference wrapper for SepFormer
         # SepFormer and DPRNN-TasNet use 16kHz, Conv-TasNet uses 8kHz
         if model_name == 'conv-tasnet':
             self._sample_rate = 8000
@@ -98,11 +102,11 @@ class SpeechSeparator:
 
     def load_model(self) -> None:
         """
-        Load the pretrained Asteroid model with fallback.
+        Load the pretrained separation model.
 
         This method downloads and caches the pretrained model if not
-        already available locally. All models (DPRNN-TasNet, Conv-TasNet,
-        and SepFormer) are loaded from the Asteroid library.
+        already available locally. DPRNN-TasNet and Conv-TasNet are loaded
+        from Asteroid, while SepFormer is loaded from SpeechBrain.
 
         Raises:
             RuntimeError: If the model fails to load.
@@ -111,49 +115,121 @@ class SpeechSeparator:
             logger.info("Model already loaded, skipping...")
             return
 
-        logger.info(f"Loading pretrained model: {self.MODEL_CONFIGS[self.model_name]}")
+        model_path = self.MODEL_CONFIGS[self.model_name]
+        logger.info(f"Loading pretrained model: {model_path}")
 
         try:
             if self.model_name == 'dprnn-tasnet':
-                from asteroid.models import DPRNNTasNet
-                try:
-                    self.model = DPRNNTasNet.from_pretrained(
-                        self.MODEL_CONFIGS[self.model_name]
-                    )
-                except (OSError, IOError, ValueError) as e:
-                    logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
-                    self.model = DPRNNTasNet(n_src=2)
+                self._load_dprnn_tasnet(model_path)
             elif self.model_name == 'conv-tasnet':
-                from asteroid.models import ConvTasNet
-                try:
-                    self.model = ConvTasNet.from_pretrained(
-                        self.MODEL_CONFIGS[self.model_name]
-                    )
-                except (OSError, IOError, ValueError) as e:
-                    logger.warning(f"Failed to load from HuggingFace: {e}. Using default config...")
-                    self.model = ConvTasNet(n_src=2)
+                self._load_conv_tasnet(model_path)
             elif self.model_name == 'sepformer':
-                from asteroid.models import SepFormer
-                try:
-                    self.model = SepFormer.from_pretrained(
-                        self.MODEL_CONFIGS[self.model_name]
-                    )
-                except (OSError, IOError) as e:
-                    logger.warning(f"Failed to load SepFormer: {e}")
-                    logger.info("Falling back to DPRNNTasNet...")
-                    from asteroid.models import DPRNNTasNet
-                    self.model = DPRNNTasNet.from_pretrained(
-                        self.MODEL_CONFIGS['dprnn-tasnet']
-                    )
-                    self.model_name = 'dprnn-tasnet'
+                self._load_sepformer(model_path)
 
-            self.model = self.model.to(self.device)
-            self.model.eval()
+            # Handle device transfer based on model type
+            if self.model_name == 'sepformer':
+                # SpeechBrain handles device transfer internally
+                # Move the inference wrapper to the device
+                if self._sepformer_inference is not None:
+                    self._sepformer_inference = self._sepformer_inference.to(self.device)
+            else:
+                # Asteroid models use standard PyTorch device transfer
+                self.model = self.model.to(self.device)
+                self.model.eval()
 
-            logger.info("Model loaded successfully")
+            logger.info(f"Model '{self.model_name}' loaded successfully")
 
         except Exception as e:
-            raise RuntimeError(f"Failed to load model: {e}")
+            raise RuntimeError(f"Failed to load model '{self.model_name}': {e}")
+
+    def _load_dprnn_tasnet(self, model_path: str) -> None:
+        """Load DPRNN-TasNet model from Asteroid."""
+        from asteroid.models import DPRNNTasNet
+        try:
+            self.model = DPRNNTasNet.from_pretrained(model_path)
+        except (OSError, IOError, ValueError) as e:
+            logger.warning(f"Failed to load pretrained DPRNN-TasNet from HuggingFace: {e}")
+            logger.info("Creating DPRNN-TasNet with default configuration...")
+            self.model = DPRNNTasNet(n_src=2)
+
+    def _load_conv_tasnet(self, model_path: str) -> None:
+        """Load Conv-TasNet model from Asteroid."""
+        from asteroid.models import ConvTasNet
+        try:
+            self.model = ConvTasNet.from_pretrained(model_path)
+        except (OSError, IOError, ValueError) as e:
+            logger.warning(f"Failed to load pretrained Conv-TasNet from HuggingFace: {e}")
+            logger.info("Creating Conv-TasNet with default configuration...")
+            self.model = ConvTasNet(n_src=2)
+
+    def _load_sepformer(self, model_path: str) -> None:
+        """
+        Load SepFormer model from SpeechBrain.
+
+        SepFormer is loaded from SpeechBrain's HuggingFace repository
+        (e.g., speechbrain/sepformer-wsj02mix).
+
+        Args:
+            model_path: HuggingFace model identifier for SpeechBrain SepFormer.
+
+        Raises:
+            RuntimeError: If SepFormer fails to load.
+        """
+        # Apply torchaudio compatibility fix for newer versions
+        # Newer torchaudio versions (>=2.1) removed list_audio_backends
+        self._apply_torchaudio_compat()
+
+        try:
+            from speechbrain.inference.separation import SepformerSeparation
+        except ImportError as e:
+            raise RuntimeError(
+                f"SpeechBrain is required for SepFormer but could not be imported: {e}. "
+                f"Please install speechbrain: pip install speechbrain"
+            )
+
+        try:
+            # SpeechBrain models are loaded differently than Asteroid models
+            # The model is wrapped in an inference class
+            savedir = os.path.join(
+                os.path.expanduser("~"),
+                ".cache",
+                "speechbrain",
+                model_path.replace("/", "_")
+            )
+            self._sepformer_inference = SepformerSeparation.from_hparams(
+                source=model_path,
+                savedir=savedir
+            )
+            # Set self.model to indicate model is loaded (used for None checks)
+            # Note: We access .mods which is SpeechBrain's internal module container.
+            # This is used only as a flag to indicate the model is loaded.
+            # The actual inference uses self._sepformer_inference.separate_batch()
+            self.model = self._sepformer_inference.mods
+            logger.info(f"SepFormer loaded from: {model_path}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load SepFormer model from '{model_path}': {e}. "
+                f"Ensure the model exists and is publicly accessible on HuggingFace."
+            )
+
+    def _apply_torchaudio_compat(self) -> None:
+        """
+        Apply torchaudio compatibility fix for newer versions.
+
+        Newer torchaudio versions (>=2.1) removed `list_audio_backends` which
+        SpeechBrain may require. This adds a compatibility shim that returns
+        common backends. The actual audio loading is handled by the libraries
+        internally and doesn't strictly depend on this list.
+        """
+        import torchaudio
+        try:
+            # Check if the function exists
+            _ = torchaudio.list_audio_backends
+        except AttributeError:
+            # Add compatibility shim for newer torchaudio versions
+            # Return common backends that are typically available
+            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
+            logger.debug("Applied torchaudio compatibility fix for list_audio_backends")
 
     def separate(
         self,
@@ -220,9 +296,8 @@ class SpeechSeparator:
         logger.info(f"Input waveform shape: {waveform.shape}")
         logger.info("Running separation...")
 
-        # Run separation
-        with torch.no_grad():
-            separated = self.model(waveform)
+        # Run separation based on model type
+        separated = self._run_separation(waveform)
 
         # Convert to numpy
         if isinstance(separated, torch.Tensor):
@@ -353,9 +428,8 @@ class SpeechSeparator:
         if chunk.dim() == 1:
             chunk = chunk.unsqueeze(0)
 
-        # Run separation
-        with torch.no_grad():
-            separated = self.model(chunk)
+        # Run separation based on model type
+        separated = self._run_separation(chunk)
 
         # Convert to numpy
         if isinstance(separated, torch.Tensor):
@@ -363,6 +437,42 @@ class SpeechSeparator:
 
         if separated.ndim == 3:
             separated = separated.squeeze(0)
+
+        return separated
+
+    def _run_separation(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Run the separation model on the input waveform.
+
+        This method handles the different APIs for Asteroid and SpeechBrain models.
+
+        Args:
+            waveform: Input waveform tensor with shape (batch, samples).
+
+        Returns:
+            Separated sources tensor.
+
+        Raises:
+            RuntimeError: If SepFormer inference wrapper is not initialized.
+        """
+        with torch.no_grad():
+            if self.model_name == 'sepformer':
+                # Validate SpeechBrain inference wrapper is available
+                if self._sepformer_inference is None:
+                    raise RuntimeError(
+                        "SepFormer inference wrapper not initialized. "
+                        "Ensure load_model() completed successfully."
+                    )
+                # SpeechBrain SepFormer uses separate_batch() for tensor input
+                # Input: (batch, samples) tensor
+                # Output: (batch, samples, num_sources) tensor
+                separated = self._sepformer_inference.separate_batch(waveform)
+                # Transpose to match Asteroid's output format: (batch, num_sources, samples)
+                if separated.dim() == 3:
+                    separated = separated.permute(0, 2, 1)
+            else:
+                # Asteroid models (DPRNN-TasNet, Conv-TasNet) use direct call
+                separated = self.model(waveform)
 
         return separated
 
