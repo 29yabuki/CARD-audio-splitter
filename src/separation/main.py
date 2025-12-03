@@ -79,9 +79,16 @@ def parse_args():
     parser.add_argument(
         '--preserve-timing',
         action='store_true',
-        default=True,
-        help='Maintain original timestamps with silence gaps (default: True)'
+        dest='preserve_timing',
+        help='Maintain original timestamps with silence gaps (default behavior)'
     )
+    parser.add_argument(
+        '--no-preserve-timing',
+        action='store_false',
+        dest='preserve_timing',
+        help='Do not preserve timing (same as --compact)'
+    )
+    parser.set_defaults(preserve_timing=True)
 
     parser.add_argument(
         '--compact',

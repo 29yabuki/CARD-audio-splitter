@@ -26,6 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Constants
+TIME_TOLERANCE = 0.001  # Tolerance for time comparison in seconds
+NORMALIZATION_FACTOR = 0.95  # Factor for audio normalization to prevent clipping
+
 
 @dataclass
 class DiarizationSegment:
@@ -219,8 +223,8 @@ class DiarizationGuidedSeparator:
                             # Check if this overlap already exists
                             existing = False
                             for existing_overlap in overlaps:
-                                if (abs(existing_overlap.start - overlap_start) < 0.001 and
-                                        abs(existing_overlap.end - overlap_end) < 0.001):
+                                if (abs(existing_overlap.start - overlap_start) < TIME_TOLERANCE and
+                                        abs(existing_overlap.end - overlap_end) < TIME_TOLERANCE):
                                     if segment.speaker not in existing_overlap.speakers:
                                         existing_overlap.speakers.append(segment.speaker)
                                     if active.speaker not in existing_overlap.speakers:
@@ -285,15 +289,17 @@ class DiarizationGuidedSeparator:
 
         logger.info(f"Loading audio: {audio_path}")
 
+        # Try soundfile first as it's more reliable for WAV files
         try:
-            waveform, sample_rate = torchaudio.load(audio_path)
-        except Exception:
-            # Fallback to soundfile
             data, sample_rate = sf.read(audio_path)
             if data.ndim == 1:
                 waveform = torch.from_numpy(data).float().unsqueeze(0)
             else:
                 waveform = torch.from_numpy(data.T).float()
+        except (RuntimeError, OSError, IOError, sf.SoundFileError) as e:
+            # Fallback to torchaudio for other formats
+            logger.debug(f"soundfile failed ({e}), trying torchaudio")
+            waveform, sample_rate = torchaudio.load(audio_path)
 
         # Convert to mono
         if waveform.shape[0] > 1:
@@ -493,7 +499,7 @@ class DiarizationGuidedSeparator:
             # Normalize audio
             max_val = np.max(np.abs(audio_data))
             if max_val > 0:
-                audio_data = audio_data / max_val * 0.95
+                audio_data = audio_data / max_val * NORMALIZATION_FACTOR
 
             # Create output filename
             output_path = os.path.join(separation_output_dir, f"{speaker}.wav")
