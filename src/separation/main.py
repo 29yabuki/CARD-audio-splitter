@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.separation.separator import SpeechSeparator
 from src.separation.diarization_separator import DiarizationGuidedSeparator
+from src.separation.targeted_separator import TargetedSpeakerSeparator
 from src.separation.utils import extract_speaker_count
 
 # Configure logging
@@ -60,10 +61,11 @@ def parse_args():
     parser.add_argument(
         '--mode',
         type=str,
-        choices=['diarization-guided', 'blind', 'auto'],
+        choices=['targeted', 'diarization-guided', 'blind', 'auto'],
         default='auto',
-        help='Separation mode: diarization-guided (uses timestamps), blind (ML-based), '
-             'or auto (uses diarization-guided if diarization file provided)'
+        help='Separation mode: targeted (CARD methodology with SepFormer on overlaps), '
+             'diarization-guided (uses timestamps), blind (ML-based), '
+             'or auto (uses targeted if diarization file provided)'
     )
 
     # Diarization-guided mode options
@@ -140,6 +142,48 @@ def parse_args():
         help='Disable automatic chunking for long files (blind mode)'
     )
 
+    # Targeted separation mode options
+    parser.add_argument(
+        '--crossfade-ms',
+        type=float,
+        default=25.0,
+        help='Cross-fade duration in milliseconds for targeted mode (default: 25.0)'
+    )
+
+    parser.add_argument(
+        '--similarity-threshold',
+        type=float,
+        default=0.7,
+        help='Cosine similarity threshold for speaker assignment in targeted mode (default: 0.7)'
+    )
+
+    parser.add_argument(
+        '--save-embeddings',
+        action='store_true',
+        help='Save enrollment embeddings to output directory (targeted mode)'
+    )
+
+    parser.add_argument(
+        '--enrollment-min-duration',
+        type=float,
+        default=3.0,
+        help='Minimum enrollment snippet duration in seconds (targeted mode, default: 3.0)'
+    )
+
+    parser.add_argument(
+        '--enrollment-max-duration',
+        type=float,
+        default=6.0,
+        help='Maximum enrollment snippet duration in seconds (targeted mode, default: 6.0)'
+    )
+
+    parser.add_argument(
+        '--overlap-padding',
+        type=float,
+        default=0.5,
+        help='Padding for overlap windows in seconds (targeted mode, default: 0.5)'
+    )
+
     return parser.parse_args()
 
 
@@ -156,16 +200,16 @@ def main():
     mode = args.mode
     if mode == 'auto':
         if args.diarization and os.path.exists(args.diarization):
-            mode = 'diarization-guided'
-            logger.info("Auto mode: Using diarization-guided separation (diarization file provided)")
+            mode = 'targeted'
+            logger.info("Auto mode: Using targeted separation (diarization file provided)")
         else:
             mode = 'blind'
             logger.info("Auto mode: Using blind separation (no diarization file)")
 
-    # Check for diarization file when using diarization-guided mode
-    if mode == 'diarization-guided':
+    # Check for diarization file when using targeted or diarization-guided mode
+    if mode in ('targeted', 'diarization-guided'):
         if not args.diarization:
-            logger.error("Diarization-guided mode requires --diarization file")
+            logger.error(f"{mode.capitalize()} mode requires --diarization file")
             sys.exit(1)
         if not os.path.exists(args.diarization):
             logger.error(f"Diarization file not found: {args.diarization}")
@@ -179,7 +223,49 @@ def main():
     print(f"Input audio: {args.audio}")
     print(f"Output directory: {args.output_dir}")
 
-    if mode == 'diarization-guided':
+    if mode == 'targeted':
+        # Targeted separation with SepFormer on overlaps
+        print(f"Diarization file: {args.diarization}")
+        print(f"Similarity threshold: {args.similarity_threshold}")
+        print(f"Cross-fade: {args.crossfade_ms}ms")
+        print(f"Overlap padding: {args.overlap_padding}s")
+        print(f"Enrollment duration: {args.enrollment_min_duration}s - {args.enrollment_max_duration}s")
+        print(f"Save embeddings: {args.save_embeddings}")
+
+        print("=" * 80)
+
+        try:
+            separator = TargetedSpeakerSeparator(
+                sample_rate=16000,
+                similarity_threshold=args.similarity_threshold,
+                crossfade_ms=args.crossfade_ms,
+                overlap_padding_s=args.overlap_padding,
+                enrollment_duration_range=(
+                    args.enrollment_min_duration,
+                    args.enrollment_max_duration
+                ),
+                device=args.device
+            )
+
+            saved_paths = separator.process_and_save(
+                audio_path=args.audio,
+                diarization_path=args.diarization,
+                output_dir=args.output_dir,
+                save_embeddings=args.save_embeddings
+            )
+        except FileNotFoundError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        except ValueError as e:
+            logger.error(f"Invalid diarization file: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Separation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif mode == 'diarization-guided':
         # Diarization-guided separation
         print(f"Diarization file: {args.diarization}")
         print(f"Overlap handling: {args.handle_overlap}")
