@@ -121,7 +121,10 @@ class EnrollmentEmbeddingExtractor:
             _ = torchaudio.list_audio_backends
         except AttributeError:
             # Add compatibility shim for newer torchaudio versions
-            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
+            # Return a reasonable default set of backends that are commonly available
+            # Note: This is a compatibility workaround and doesn't affect actual audio loading
+            # which is handled by the libraries' internal mechanisms
+            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox', 'ffmpeg']
             logger.debug("Applied torchaudio compatibility fix for list_audio_backends")
     
     def select_enrollment_snippets(

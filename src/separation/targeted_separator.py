@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import soundfile as sf
 import torch
+import torchaudio
 
 from .crossfade import concatenate_with_crossfade
 from .diarization_separator import DiarizationSegment, OverlapRegion
@@ -33,6 +34,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constants
+# Normalization factor to prevent clipping while maintaining loudness
+# 0.95 leaves 5% headroom for safety
 NORMALIZATION_FACTOR = 0.95
 
 
@@ -356,18 +359,9 @@ class TargetedSpeakerSeparator:
         
         # Convert to torch tensor
         window_tensor = torch.from_numpy(window).float().unsqueeze(0)
-        window_tensor = window_tensor.to(self.device)
         
-        # Run separation
-        with torch.no_grad():
-            separated = self.sepformer._run_separation(window_tensor)
-        
-        # Convert to numpy
-        if isinstance(separated, torch.Tensor):
-            separated = separated.cpu().numpy()
-        
-        if separated.ndim == 3:
-            separated = separated.squeeze(0)
+        # Run separation using the public method
+        separated = self.sepformer._separate_chunk(window_tensor)
         
         # Extract embeddings for each separated source
         source_embeddings = []
@@ -447,7 +441,6 @@ class TargetedSpeakerSeparator:
         
         # Resample if needed
         if sr != self.sample_rate:
-            import torchaudio
             data_tensor = torch.from_numpy(data).float().unsqueeze(0)
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sr,
@@ -623,7 +616,6 @@ class TargetedSpeakerSeparator:
             if data.ndim > 1:
                 data = np.mean(data, axis=1)
             if sr != self.sample_rate:
-                import torchaudio
                 data_tensor = torch.from_numpy(data).float().unsqueeze(0)
                 resampler = torchaudio.transforms.Resample(
                     orig_freq=sr,
