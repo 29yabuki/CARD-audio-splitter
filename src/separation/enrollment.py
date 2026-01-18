@@ -80,6 +80,9 @@ class EnrollmentEmbeddingExtractor:
         Raises:
             RuntimeError: If the model fails to load.
         """
+        # Apply torchaudio compatibility fix before importing SpeechBrain
+        self._apply_torchaudio_compat()
+        
         try:
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError as e:
@@ -104,6 +107,22 @@ class EnrollmentEmbeddingExtractor:
             logger.info("ECAPA-TDNN model loaded successfully")
         except Exception as e:
             raise RuntimeError(f"Failed to load ECAPA-TDNN model: {e}")
+    
+    def _apply_torchaudio_compat(self) -> None:
+        """
+        Apply torchaudio compatibility fix for newer versions.
+        
+        Newer torchaudio versions (>=2.1) removed `list_audio_backends` which
+        SpeechBrain may require. This adds a compatibility shim.
+        """
+        import torchaudio
+        try:
+            # Check if the function exists
+            _ = torchaudio.list_audio_backends
+        except AttributeError:
+            # Add compatibility shim for newer torchaudio versions
+            torchaudio.list_audio_backends = lambda: ['soundfile', 'sox']
+            logger.debug("Applied torchaudio compatibility fix for list_audio_backends")
     
     def select_enrollment_snippets(
         self,
